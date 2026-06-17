@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Environment and local state
+.env
+.env.*
+*.log
+*.bak
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,57 @@
+{
+  "id": "omnimemory-memory",
+  "kind": "memory",
+  "name": "OmniMemory",
+  "description": "OmniMemory-backed memory slot plugin for OpenClaw.",
+  "uiHints": {
+    "apiKey": {
+      "label": "OmniMemory API Key",
+      "sensitive": true,
+      "placeholder": "qbk_xxx",
+      "help": "OmniMemory API key or ${OMNI_MEMORY_API_KEY}"
+    },
+    "baseUrl": {
+      "label": "Base URL",
+      "placeholder": "https://cvlymnfmxqow.sealoshzh.site/api/v2",
+      "help": "OmniMemory router v2 API root"
+    },
+    "deviceNo": {
+      "label": "Device No",
+      "help": "Optional device number for device-level memory isolation"
+    },
+    "groupId": {
+      "label": "Group ID",
+      "help": "Optional shared retrieval/write group. Leave empty for account/device-wide cross-session recall."
+    },
+    "sessionScope": {
+      "label": "Session Scope",
+      "help": "Use global for cross-session recall; use session only when each OpenClaw session must be isolated."
+    },
+    "autoCapture": {
+      "label": "Auto Capture",
+      "help": "Write recent conversation turns back to OmniMemory"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": { "type": "string" },
+      "baseUrl": { "type": "string" },
+      "deviceNo": { "type": "string" },
+      "groupId": { "type": "string" },
+      "sessionId": { "type": "string" },
+      "sessionScope": { "type": "string", "enum": ["global", "session"] },
+      "searchLimit": { "type": "number", "minimum": 1 },
+      "failSilent": { "type": "boolean" },
+      "timeoutMs": { "type": "number", "minimum": 1 },
+      "autoCapture": { "type": "boolean" },
+      "captureStrategy": { "type": "string", "enum": ["last_turn", "full_session"] },
+      "captureRoles": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["user", "assistant", "tool", "system"] }
+      },
+      "writeWait": { "type": "boolean" }
+    }
+  }
+}

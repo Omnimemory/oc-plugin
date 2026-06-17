@@ -1,0 +1,11 @@
+{
+  "name": "omnimemory-openclaw-plugin-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Clean v2 OmniMemory plugins for OpenClaw",
+  "scripts": {
+    "packages:sync": "node ./scripts/sync-plugin-packages.mjs",
+    "test": "npm run packages:sync && node --test ./test/*.test.mjs"
+  }
+}

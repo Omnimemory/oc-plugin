@@ -1,0 +1,4 @@
+interface:
+  display_name: "OmniMemory Installer"
+  short_description: "Install OmniMemory into OpenClaw"
+  default_prompt: "Use $omnimemory-installer to install and configure the OmniMemory OpenClaw plugin."
