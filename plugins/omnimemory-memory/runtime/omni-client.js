@@ -19,7 +19,8 @@ function clampTopK(value, fallback) {
 }
 
 function clampFetchTopK(value, fallback) {
-  return Math.min(20, Math.max(clampTopK(value, fallback), Math.min(20, clampTopK(value, fallback) * 4)));
+  const requestedTopK = clampTopK(value, fallback);
+  return Math.min(20, Math.max(requestedTopK, requestedTopK * 4));
 }
 
 function parseJsonMaybe(text) {
@@ -109,8 +110,8 @@ function describeScore(value) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "n/a";
 }
 
-function describeSearchItem(item, index) {
-  return [
+function describeSearchItem(item, index, { includeContent = false } = {}) {
+  const parts = [
     `#${index + 1}`,
     `score=${describeScore(item.score)}`,
     `rel=${describeScore(item.relevanceScore)}`,
@@ -119,8 +120,12 @@ function describeSearchItem(item, index) {
     `group=${describeOptional(item.groupId)}`,
     `event=${describeOptional(item.eventId)}`,
     `time=${describeOptional(item.timestamp)}`,
-    `text="${truncateForLog(item.text)}"`,
-  ].join(" ");
+    `chars=${typeof item.text === "string" ? item.text.length : 0}`,
+  ];
+  if (includeContent) {
+    parts.push(`text="${truncateForLog(item.text)}"`);
+  }
+  return parts.join(" ");
 }
 
 export function coerceSearchItems(payload) {
@@ -175,8 +180,8 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
     logger,
     [
       "recall request -> POST /memory/retrieval",
-      `query="${truncateForLog(trimmedQuery, 120)}"`,
-      `original="${truncateForLog(query, 120)}"`,
+      `query_chars=${trimmedQuery.length}`,
+      `original_chars=${typeof query === "string" ? query.length : 0}`,
       `requested_top_k=${requestedTopK}`,
       `fetch_top_k=${fetchTopK}`,
       `min_score=${describeScore(minScore)}`,
@@ -185,6 +190,12 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
       `device_no=${describeSet(config.deviceNo)}`,
     ].join(" "),
   );
+  if (config.debugLogContent) {
+    logStatus(
+      logger,
+      `recall request content query="${truncateForLog(trimmedQuery, 120)}" original="${truncateForLog(query, 120)}"`,
+    );
+  }
   try {
     const result = await requestJson({
       config,
@@ -233,7 +244,7 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
       ].join(" "),
     );
     for (const [index, item] of items.entries()) {
-      logStatus(logger, `recall item ${describeSearchItem(item, index)}`);
+      logStatus(logger, `recall item ${describeSearchItem(item, index, { includeContent: config.debugLogContent })}`);
     }
     return items;
   } catch (error) {
@@ -248,6 +259,7 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
 async function waitForJob({ config, jobId, timeoutMs, logger }) {
   const deadline = Date.now() + timeoutMs;
   const pollPath = `/memory/ingest/jobs/${encodeURIComponent(jobId)}`;
+  let pollDelayMs = 500;
   while (true) {
     logStatus(logger, `ingest job poll -> job_id=${jobId} path=${pollPath}`);
     const { payload } = await requestJson({
@@ -266,7 +278,8 @@ async function waitForJob({ config, jobId, timeoutMs, logger }) {
     if (Date.now() >= deadline) {
       throw new Error(`OmniMemory ingest wait timed out after ${timeoutMs}ms`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollDelayMs, Math.max(0, deadline - Date.now()))));
+    pollDelayMs = Math.min(5_000, Math.floor(pollDelayMs * 1.6));
   }
 }
 
@@ -315,9 +328,10 @@ export async function ingestMessages({ config, sessionKey, sessionId, groupId, m
     ].join(" "),
   );
   for (const [index, turn] of payloadTurns.entries()) {
+    const baseMessage = `ingest turn #${index + 1} role=${turn.role} chars=${turn.content.length}`;
     logStatus(
       logger,
-      `ingest turn #${index + 1} role=${turn.role} chars=${turn.content.length} text="${truncateForLog(turn.content)}"`,
+      config.debugLogContent ? `${baseMessage} text="${truncateForLog(turn.content)}"` : baseMessage,
     );
   }
   const stateKey = resolvedSessionId || resolvedGroupId || "global";
@@ -393,7 +407,7 @@ export async function ingestMessages({ config, sessionKey, sessionId, groupId, m
   sessionWriteState.set(stateKey, nextState);
   await writePersistentState(statePath, nextState);
   if (wait && jobId) {
-    await waitForJob({ config, jobId, timeoutMs: Math.max(config.timeoutMs, 60_000), logger });
+    await waitForJob({ config, jobId, timeoutMs: config.writeWaitTimeoutMs, logger });
   } else if (wait && !jobId) {
     logStatus(logger, "ingest wait skipped (no job_id returned)");
   }

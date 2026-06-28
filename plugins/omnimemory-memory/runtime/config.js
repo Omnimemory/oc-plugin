@@ -6,6 +6,7 @@ export const COMMON_DEFAULTS = Object.freeze({
   searchLimit: 8,
   failSilent: true,
   timeoutMs: 10_000,
+  allowInsecureBaseUrl: false,
   autoRecall: true,
   autoCapture: true,
   recallTopK: 5,
@@ -13,7 +14,9 @@ export const COMMON_DEFAULTS = Object.freeze({
   minPromptChars: 2,
   captureStrategy: "last_turn",
   captureRoles: ["user"],
-  writeWait: true,
+  writeWait: false,
+  writeWaitTimeoutMs: 15_000,
+  debugLogContent: false,
   promptBlockTitle: "OmniMemory Recall",
 });
 
@@ -55,6 +58,25 @@ function normalizeString(value, fallback = undefined) {
   return trimmed || fallback;
 }
 
+function normalizeBaseUrl(value, fallback, allowInsecure) {
+  const raw = normalizeString(value, fallback);
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("omnimemory baseUrl must be a valid URL");
+  }
+  const isHttps = parsed.protocol === "https:";
+  const isDevHttp =
+    parsed.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname) &&
+    allowInsecure === true;
+  if (!isHttps && !isDevHttp) {
+    throw new Error("omnimemory baseUrl must use https unless allowInsecureBaseUrl is true for localhost dev");
+  }
+  return raw.replace(/\/+$/, "");
+}
+
 function normalizeEnum(value, allowed, fallback) {
   const normalized = normalizeString(value);
   return normalized && allowed.includes(normalized) ? normalized : fallback;
@@ -74,10 +96,15 @@ function normalizeRoles(value) {
 
 export function resolveOmniCommonConfig(rawConfig = {}, env = process.env) {
   const apiKey = parseEnvTemplate(rawConfig.apiKey, env);
-  const baseUrl = normalizeString(rawConfig.baseUrl, COMMON_DEFAULTS.baseUrl)?.replace(/\/+$/, "");
+  const allowInsecureBaseUrl = normalizeBoolean(
+    rawConfig.allowInsecureBaseUrl,
+    COMMON_DEFAULTS.allowInsecureBaseUrl,
+  );
+  const baseUrl = normalizeBaseUrl(rawConfig.baseUrl, COMMON_DEFAULTS.baseUrl, allowInsecureBaseUrl);
   return {
     apiKey,
     baseUrl,
+    allowInsecureBaseUrl,
     deviceNo: parseEnvTemplate(rawConfig.deviceNo, env),
     groupId: parseEnvTemplate(rawConfig.groupId, env),
     sessionId: parseEnvTemplate(rawConfig.sessionId, env),
@@ -97,6 +124,10 @@ export function resolveOmniCommonConfig(rawConfig = {}, env = process.env) {
     ),
     captureRoles: normalizeRoles(rawConfig.captureRoles),
     writeWait: normalizeBoolean(rawConfig.writeWait, COMMON_DEFAULTS.writeWait),
+    writeWaitTimeoutMs: Math.floor(
+      normalizeNumber(rawConfig.writeWaitTimeoutMs, COMMON_DEFAULTS.writeWaitTimeoutMs, { min: 1 }),
+    ),
+    debugLogContent: normalizeBoolean(rawConfig.debugLogContent, COMMON_DEFAULTS.debugLogContent),
     promptBlockTitle: normalizeString(rawConfig.promptBlockTitle, COMMON_DEFAULTS.promptBlockTitle),
   };
 }

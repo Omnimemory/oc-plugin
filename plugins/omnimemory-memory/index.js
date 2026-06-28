@@ -27,12 +27,8 @@ const plugin = {
       { names: ["memory_search"] },
     );
 
-    api.on("before_prompt_build", async () => {
-      return buildMemoryModePromptHookResult();
-    });
-
-    api.on("before_agent_start", async (event, ctx) => {
-      return await buildRecallContext({
+    api.on("before_prompt_build", async (event, ctx) => {
+      return await buildMemoryModePromptHookResult({
         config,
         event,
         ctx,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 function normalizeString(value) {
@@ -8,16 +9,18 @@ function normalizeString(value) {
 
 export function buildPersistentStatePath({ workspaceDir, sessionFile, sessionKey, sessionId }) {
   const workspaceRoot = normalizeString(workspaceDir);
+  const baseId = normalizeString(sessionKey) || normalizeString(sessionId) || normalizeString(sessionFile) || "global";
+  const digest = createHash("sha1").update(baseId).digest("hex");
   if (!workspaceRoot) {
-    return normalizeString(sessionFile) ? `${sessionFile.trim()}.omnimemory-state.json` : undefined;
-  }
-  const baseId = normalizeString(sessionKey) || normalizeString(sessionId);
-  if (!baseId) {
     return normalizeString(sessionFile)
       ? `${sessionFile.trim()}.omnimemory-state.json`
-      : path.join(workspaceRoot, ".omnimemory", "state", "global.json");
+      : path.join(
+          process.env.OPENCLAW_STATE_DIR || process.env.CLAWDBOT_STATE_DIR || path.join(os.homedir(), ".openclaw"),
+          "omnimemory",
+          "state",
+          `${digest}.json`,
+        );
   }
-  const digest = createHash("sha1").update(baseId).digest("hex");
   return path.join(workspaceRoot, ".omnimemory", "state", `${digest}.json`);
 }
 
