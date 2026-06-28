@@ -23,10 +23,12 @@ const MODES = {
         deviceNo,
         groupId,
         sessionScope: "global",
+        autoRecall: true,
         autoCapture: true,
         captureStrategy: "last_turn",
-        writeWait: true,
+        writeWait: false,
         failSilent: true,
+        debugLogContent: false,
       });
     },
     inactivePluginId: "omnimemory-overlay",
@@ -285,6 +287,13 @@ function applyConfig({ modeSpec, opts }) {
       ? next.plugins.entries[modeSpec.pluginId]
       : {}),
     enabled: true,
+    hooks: {
+      ...(next.plugins.entries[modeSpec.pluginId]?.hooks &&
+      typeof next.plugins.entries[modeSpec.pluginId].hooks === "object"
+        ? next.plugins.entries[modeSpec.pluginId].hooks
+        : {}),
+      allowConversationAccess: true,
+    },
     config: modeSpec.config({
       apiKeyValue,
       baseUrl: opts.baseUrl || currentPluginConfig.baseUrl || DEFAULT_BASE_URL,
@@ -329,6 +338,9 @@ function planReport({ opts, pluginRoot, source, modeSpec, packageDir, configTarg
     source,
     packageDir,
     configTarget,
+    hooks: {
+      allowConversationAccess: true,
+    },
     config: modeSpec.config({
       apiKeyValue,
       baseUrl: opts.baseUrl,

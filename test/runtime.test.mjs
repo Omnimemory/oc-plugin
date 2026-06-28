@@ -9,7 +9,8 @@ import {
   searchMemory,
 } from "../shared/runtime/omni-client.js";
 import { normalizeMemorySearchQuery, normalizeOpenClawMessages } from "../shared/runtime/messages.js";
-import { buildMemoryPluginGuidance } from "../shared/runtime/prompt-composer.js";
+import { buildMemoryPluginGuidance, buildRecallPromptBlock, groupMemoryItems } from "../shared/runtime/prompt-composer.js";
+import { buildPersistentStatePath } from "../shared/runtime/persistent-state.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -40,6 +41,32 @@ test("resolveOmniCommonConfig resolves env template and v2 defaults", () => {
   assert.equal(config.deviceNo, "dev-1");
   assert.equal(config.recallTopK, 7);
   assert.equal(config.baseUrl, "https://cvlymnfmxqow.sealoshzh.site/api/v2");
+  assert.equal(config.writeWait, false);
+  assert.equal(config.writeWaitTimeoutMs, 15000);
+  assert.equal(config.debugLogContent, false);
+  assert.equal(config.allowInsecureBaseUrl, false);
+});
+
+test("resolveOmniCommonConfig rejects insecure base URLs unless explicitly allowed for localhost", () => {
+  assert.throws(
+    () => resolveOmniCommonConfig({ apiKey: "qbk_test", baseUrl: "http://example.test/api/v2" }),
+    /baseUrl must use https/i,
+  );
+  assert.throws(
+    () =>
+      resolveOmniCommonConfig({
+        apiKey: "qbk_test",
+        baseUrl: "http://example.test/api/v2",
+        allowInsecureBaseUrl: true,
+      }),
+    /baseUrl must use https/i,
+  );
+  const devConfig = resolveOmniCommonConfig({
+    apiKey: "qbk_test",
+    baseUrl: "http://127.0.0.1:8080/api/v2/",
+    allowInsecureBaseUrl: true,
+  });
+  assert.equal(devConfig.baseUrl, "http://127.0.0.1:8080/api/v2");
 });
 
 test("session and group resolution default to cross-session recall", () => {
@@ -136,6 +163,58 @@ test("searchMemory defaults to cross-session recall and sends device metadata", 
     client_meta: { device_no: "device-7" },
   });
   assert.equal(items[0].path, "omnimemory://event/evt-1");
+});
+
+test("searchMemory computes fetch topK without changing clamp behavior", async () => {
+  const config = resolveOmniCommonConfig({
+    apiKey: "qbk_test",
+    baseUrl: "https://example.test/api/v2",
+    searchLimit: 8,
+  });
+  const seen = [];
+  globalThis.fetch = async (_url, options) => {
+    seen.push(JSON.parse(options.body).top_k);
+    return mockJsonResponse(200, {
+      success: true,
+      message: "ok",
+      code: 200,
+      data: { evidence_details: [] },
+    });
+  };
+  await searchMemory({ config, query: "x", topK: 3 });
+  await searchMemory({ config, query: "x", topK: 8 });
+  await searchMemory({ config, query: "x", topK: 100 });
+  assert.deepEqual(seen, [12, 20, 20]);
+});
+
+test("searchMemory logs metadata by default without leaking query or memory content", async () => {
+  const config = resolveOmniCommonConfig({
+    apiKey: "qbk_test",
+    baseUrl: "https://example.test/api/v2",
+  });
+  const logs = [];
+  const logger = { info(message) { logs.push(message); } };
+  globalThis.fetch = async () =>
+    mockJsonResponse(200, {
+      success: true,
+      message: "ok",
+      code: 200,
+      data: {
+        evidence_details: [
+          {
+            event_id: "evt-secret",
+            text: "Sensitive launch memory content.",
+            source: "memory",
+          },
+        ],
+      },
+    });
+  await searchMemory({ config, query: "secret launch query", topK: 1, logger });
+  const logText = logs.join("\n");
+  assert.match(logText, /query_chars=/);
+  assert.match(logText, /chars=32/);
+  assert.doesNotMatch(logText, /secret launch query/);
+  assert.doesNotMatch(logText, /Sensitive launch memory content/);
 });
 
 test("searchMemory sends configured group_id for shared memory buckets", async () => {
@@ -243,6 +322,31 @@ test("ingestMessages posts v2 ingest body with session_id, group_id, commit_id a
   assert.equal(result.jobId, "job-1");
 });
 
+test("ingestMessages logs metadata by default without leaking captured turn content", async () => {
+  const config = resolveOmniCommonConfig({
+    apiKey: "qbk_test",
+    baseUrl: "https://example.test/api/v2",
+  });
+  const logs = [];
+  const logger = { info(message) { logs.push(message); } };
+  globalThis.fetch = async () =>
+    mockJsonResponse(202, {
+      success: true,
+      message: "ok",
+      code: 202,
+      data: { job_id: "job-1", status: "queued" },
+    });
+  await ingestMessages({
+    config,
+    sessionKey: "sess-log",
+    messages: [{ role: "user", text: "very private captured memory" }],
+    logger,
+  });
+  const logText = logs.join("\n");
+  assert.match(logText, /ingest turn #1 role=user chars=28/);
+  assert.doesNotMatch(logText, /very private captured memory/);
+});
+
 test("ingestMessages waits by polling the v2 job endpoint", async () => {
   const config = resolveOmniCommonConfig({
     apiKey: "qbk_test",
@@ -287,6 +391,76 @@ test("ingestMessages waits by polling the v2 job endpoint", async () => {
       "GET https://example.test/api/v2/memory/ingest/jobs/job-1",
     ],
   );
+});
+
+test("ingestMessages backs off ingest job polling", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    delays.push(ms);
+    return originalSetTimeout(fn, 0, ...args);
+  };
+  try {
+    const config = resolveOmniCommonConfig({
+      apiKey: "qbk_test",
+      baseUrl: "https://example.test/api/v2",
+      writeWaitTimeoutMs: 30000,
+    });
+    let pollCount = 0;
+    globalThis.fetch = async (url) => {
+      if (url.endsWith("/memory/ingest")) {
+        return mockJsonResponse(202, {
+          success: true,
+          message: "ok",
+          code: 202,
+          data: { job_id: "job-backoff", status: "queued" },
+        });
+      }
+      pollCount += 1;
+      return mockJsonResponse(200, {
+        success: true,
+        message: "ok",
+        code: 200,
+        data: { job_id: "job-backoff", status: pollCount >= 4 ? "completed" : "queued" },
+      });
+    };
+    await ingestMessages({
+      config,
+      sessionKey: "sess-backoff",
+      messages: [{ role: "user", text: "wait with backoff" }],
+      wait: true,
+    });
+    assert.deepEqual(delays.filter((delay) => delay !== config.timeoutMs).slice(0, 3), [500, 800, 1280]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("buildPersistentStatePath falls back to OpenClaw state dir when no workspace or session file exists", () => {
+  const oldOpenClawStateDir = process.env.OPENCLAW_STATE_DIR;
+  const oldClawdbotStateDir = process.env.CLAWDBOT_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = "/tmp/openclaw-state-test";
+  delete process.env.CLAWDBOT_STATE_DIR;
+  try {
+    const statePath = buildPersistentStatePath({
+      workspaceDir: undefined,
+      sessionFile: undefined,
+      sessionKey: "sess-fallback",
+      sessionId: undefined,
+    });
+    assert.match(statePath, /^\/tmp\/openclaw-state-test\/omnimemory\/state\/[a-f0-9]{40}\.json$/);
+  } finally {
+    if (oldOpenClawStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = oldOpenClawStateDir;
+    }
+    if (oldClawdbotStateDir === undefined) {
+      delete process.env.CLAWDBOT_STATE_DIR;
+    } else {
+      process.env.CLAWDBOT_STATE_DIR = oldClawdbotStateDir;
+    }
+  }
 });
 
 test("normalizeOpenClawMessages strips recalled memory wrappers before capture", () => {
@@ -347,4 +521,19 @@ test("memory guidance references memory_search but not memory_get", () => {
   const text = buildMemoryPluginGuidance();
   assert.match(text, /memory_search/);
   assert.doesNotMatch(text, /memory_get/);
+});
+
+test("recall prompt groups Chinese preferences and plans", () => {
+  const items = [
+    { text: "我喜欢喝咖啡" },
+    { text: "明天下午三点开会" },
+    { text: "我的电脑是银色的" },
+  ];
+  const groups = groupMemoryItems(items);
+  assert.deepEqual(groups.preferences.map((item) => item.text), ["我喜欢喝咖啡"]);
+  assert.deepEqual(groups.plans.map((item) => item.text), ["明天下午三点开会"]);
+  assert.deepEqual(groups.facts.map((item) => item.text), ["我的电脑是银色的"]);
+  const block = buildRecallPromptBlock({ items, title: "test" });
+  assert.match(block, /<preferences>\n1\. 我喜欢喝咖啡\n<\/preferences>/);
+  assert.match(block, /<plans>\n1\. 明天下午三点开会\n<\/plans>/);
 });

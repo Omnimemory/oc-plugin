@@ -82,13 +82,11 @@ openclaw config validate --json
 openclaw plugins doctor
 ```
 
-允许出现：
+不应出现插件 hard error 或 legacy hook warning。当前插件自动召回已迁移到 `before_prompt_build`，所以不应再出现：
 
 ```text
 omnimemory-memory still uses legacy before_agent_start
 ```
-
-这是当前自动召回使用的 hook，属于已知 warning。
 
 检查 gateway：
 
@@ -330,9 +328,9 @@ backend_status_url_ignored=/api/v1/...
 /memory/ingest/jobs/{job_id}
 ```
 
-### 为什么 doctor 提示 legacy before_agent_start？
+### 为什么 doctor 不应再提示 legacy before_agent_start？
 
-这是 OpenClaw 对 hook 的兼容性提示。插件目前用 `before_agent_start` 做自动召回，所以会有 warning。只要配置校验通过、gateway health OK、日志有 recall/ingest，就不影响当前测试。
+插件自动召回已迁移到 `before_prompt_build`。如果 doctor 仍提示 `legacy before_agent_start`，说明安装目录里仍是旧版本插件，需要重新执行安装脚本并重启 gateway。
 
 ## 回归检查清单
 

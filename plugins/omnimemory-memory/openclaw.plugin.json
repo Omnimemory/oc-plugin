@@ -3,6 +3,9 @@
   "kind": "memory",
   "name": "OmniMemory",
   "description": "OmniMemory-backed memory slot plugin for OpenClaw.",
+  "contracts": {
+    "tools": ["memory_search"]
+  },
   "uiHints": {
     "apiKey": {
       "label": "OmniMemory API Key",
@@ -38,6 +41,7 @@
     "properties": {
       "apiKey": { "type": "string" },
       "baseUrl": { "type": "string" },
+      "allowInsecureBaseUrl": { "type": "boolean" },
       "deviceNo": { "type": "string" },
       "groupId": { "type": "string" },
       "sessionId": { "type": "string" },
@@ -45,13 +49,20 @@
       "searchLimit": { "type": "number", "minimum": 1 },
       "failSilent": { "type": "boolean" },
       "timeoutMs": { "type": "number", "minimum": 1 },
+      "autoRecall": { "type": "boolean" },
+      "recallTopK": { "type": "number", "minimum": 1 },
+      "recallMinScore": { "type": "number" },
+      "minPromptChars": { "type": "number", "minimum": 0 },
       "autoCapture": { "type": "boolean" },
       "captureStrategy": { "type": "string", "enum": ["last_turn", "full_session"] },
       "captureRoles": {
         "type": "array",
         "items": { "type": "string", "enum": ["user", "assistant", "tool", "system"] }
       },
-      "writeWait": { "type": "boolean" }
+      "writeWait": { "type": "boolean" },
+      "writeWaitTimeoutMs": { "type": "number", "minimum": 1 },
+      "debugLogContent": { "type": "boolean" },
+      "promptBlockTitle": { "type": "string" }
     }
   }
 }

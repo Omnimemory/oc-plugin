@@ -164,8 +164,10 @@ export function createMemorySearchTool({ config, sessionKey, sessionId, groupId,
   };
 }
 
-export function buildMemoryModePromptHookResult() {
+export async function buildMemoryModePromptHookResult({ config, event, ctx, logger, mode = "plugin" } = {}) {
+  const recallContext = await buildRecallContext({ config, event, ctx, logger, mode });
   return {
+    ...recallContext,
     appendSystemContext: buildMemoryPluginGuidance(),
   };
 }

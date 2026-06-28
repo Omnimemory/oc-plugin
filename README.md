@@ -36,6 +36,13 @@ The runtime unwraps `data` before reading `evidence_details`, ingest acks, or jo
 
 The default `sessionScope` is `global`, so recall is not limited to the current OpenClaw session. With no `groupId`, retrieval leaves `group_id` empty and lets OmniMemory search the account/device-wide memory space for the configured API key. Configure `groupId` when multiple OpenClaw sessions should share a named bucket. Set `sessionScope: "session"` only when every OpenClaw session must be isolated.
 
+## Launch Safety Defaults
+
+- `baseUrl` must use HTTPS by default. Local HTTP is allowed only for `localhost`/`127.0.0.1`/`::1` when `allowInsecureBaseUrl` is explicitly enabled.
+- Logs do not include query text, recalled memory text, or captured turn text unless `debugLogContent` is explicitly enabled.
+- `writeWait` defaults to `false`, so ingest jobs do not block OpenClaw lifecycle hooks by default.
+- The installer grants `hooks.allowConversationAccess=true` because automatic capture reads conversation messages from lifecycle hooks.
+
 ## Test
 
 ```bash
