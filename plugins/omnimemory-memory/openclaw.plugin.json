@@ -15,16 +15,16 @@
     },
     "baseUrl": {
       "label": "Base URL",
-      "placeholder": "https://cvlymnfmxqow.sealoshzh.site/api/v2",
+      "placeholder": "https://api.omnimemory.cn/api/v2",
       "help": "OmniMemory router v2 API root"
     },
     "deviceNo": {
       "label": "Device No",
-      "help": "Optional device number for device-level memory isolation"
+      "help": "Required for hybrid retrieval. Use a stable customer-defined device number or ${OMNI_MEMORY_DEVICE_NO}."
     },
     "groupId": {
       "label": "Group ID",
-      "help": "Optional shared retrieval/write group. Leave empty for account/device-wide cross-session recall."
+      "help": "Optional shared retrieval/write group. Leave empty for device-wide cross-session recall."
     },
     "sessionScope": {
       "label": "Session Scope",

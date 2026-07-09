@@ -40,7 +40,7 @@ test("resolveOmniCommonConfig resolves env template and v2 defaults", () => {
   assert.equal(config.apiKey, "qbk_test");
   assert.equal(config.deviceNo, "dev-1");
   assert.equal(config.recallTopK, 7);
-  assert.equal(config.baseUrl, "https://cvlymnfmxqow.sealoshzh.site/api/v2");
+  assert.equal(config.baseUrl, "https://api.omnimemory.cn/api/v2");
   assert.equal(config.writeWait, false);
   assert.equal(config.writeWaitTimeoutMs, 15000);
   assert.equal(config.debugLogContent, false);
@@ -154,7 +154,7 @@ test("searchMemory defaults to cross-session recall and sends device metadata", 
     });
   };
   const items = await searchMemory({ config, query: "remember?", sessionKey: "sess-1", topK: 3 });
-  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval");
+  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval/hybrid");
   assert.equal(captured.options.headers["X-API-Key"], "qbk_test");
   assert.equal(captured.options.headers["X-Device-No"], "device-7");
   assert.deepEqual(captured.body, {
@@ -165,10 +165,28 @@ test("searchMemory defaults to cross-session recall and sends device metadata", 
   assert.equal(items[0].path, "omnimemory://event/evt-1");
 });
 
+test("searchMemory requires deviceNo before calling hybrid retrieval", async () => {
+  const config = resolveOmniCommonConfig({
+    apiKey: "qbk_test",
+    baseUrl: "https://example.test/api/v2",
+  });
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error("fetch should not be called");
+  };
+  await assert.rejects(
+    searchMemory({ config, query: "remember?", sessionKey: "sess-1", topK: 3 }),
+    /deviceNo is required for hybrid retrieval/i,
+  );
+  assert.equal(called, false);
+});
+
 test("searchMemory computes fetch topK without changing clamp behavior", async () => {
   const config = resolveOmniCommonConfig({
     apiKey: "qbk_test",
     baseUrl: "https://example.test/api/v2",
+    deviceNo: "device-7",
     searchLimit: 8,
   });
   const seen = [];
@@ -191,6 +209,7 @@ test("searchMemory logs metadata by default without leaking query or memory cont
   const config = resolveOmniCommonConfig({
     apiKey: "qbk_test",
     baseUrl: "https://example.test/api/v2",
+    deviceNo: "device-7",
   });
   const logs = [];
   const logger = { info(message) { logs.push(message); } };
@@ -221,6 +240,7 @@ test("searchMemory sends configured group_id for shared memory buckets", async (
   const config = resolveOmniCommonConfig({
     apiKey: "qbk_test",
     baseUrl: "https://example.test/api/v2",
+    deviceNo: "device-7",
     groupId: "shared",
   });
   let captured;
@@ -234,7 +254,7 @@ test("searchMemory sends configured group_id for shared memory buckets", async (
     });
   };
   await searchMemory({ config, query: "remember?", sessionKey: "sess-1", groupId: "ctx-group", topK: 3 });
-  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval");
+  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval/hybrid");
   assert.equal(captured.body.group_id, "shared");
 });
 
@@ -242,6 +262,7 @@ test("searchMemory filters OpenClaw control noise and reranks relevant memories"
   const config = resolveOmniCommonConfig({
     apiKey: "qbk_test",
     baseUrl: "https://example.test/api/v2",
+    deviceNo: "device-7",
     recallTopK: 3,
   });
   let captured;
@@ -282,7 +303,7 @@ test("searchMemory filters OpenClaw control noise and reranks relevant memories"
     query: "调用omni插件回答我，我今天抽的什么烟",
     topK: 3,
   });
-  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval");
+  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval/hybrid");
   assert.equal(captured.body.query, "今天抽的什么烟");
   assert.equal(captured.body.top_k, 12);
   assert.deepEqual(

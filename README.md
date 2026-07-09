@@ -1,22 +1,28 @@
 # OmniMemory OpenClaw Plugin v2
 
-Clean OpenClaw plugin implementation for the current OmniMemory router v2 backend.
+[Chinese version](README.zh.md)
 
-This project intentionally does not modify `../oc_plugin-1`. It keeps the useful OpenClaw wiring ideas from the old plugin, but removes v1 compatibility, graph calls, synthetic paths, and `memory_get`.
+## Purpose
+
+This repository contains the OmniMemory memory-slot plugin for OpenClaw. It connects OpenClaw long-term memory to the OmniMemory v2 backend. The current package is memory-only: it does not include overlay mode, v1 compatibility, graph/detail reads, or `memory_get`.
+
+After installation, the plugin owns the OpenClaw memory slot, registers the `memory_search` tool, and automatically recalls OmniMemory context before prompt construction. It writes recent capturable conversation turns back to OmniMemory at agent end, compaction, and reset.
 
 ## Backend Contract
 
-Default API base:
+Default API root:
 
 ```text
-https://cvlymnfmxqow.sealoshzh.site/api/v2
+https://api.omnimemory.cn/api/v2
 ```
 
-Used endpoints:
+Endpoints used by the plugin:
 
-- `POST /memory/retrieval`
+- `POST /memory/retrieval/hybrid`
 - `POST /memory/ingest`
 - `GET /memory/ingest/jobs/{job_id}`
+
+Hybrid retrieval requires a stable device number. Configure `deviceNo`, preferably as the environment template `${OMNI_MEMORY_DEVICE_NO}`. The plugin sends both the `X-Device-No` header and `client_meta.device_no`.
 
 All v2 responses are Envelope-wrapped:
 
@@ -24,24 +30,48 @@ All v2 responses are Envelope-wrapped:
 { "success": true, "message": "ok", "code": 200, "data": {} }
 ```
 
-The runtime unwraps `data` before reading `evidence_details`, ingest acks, or job status.
+The runtime unwraps `data` before reading `evidence_details`, ingest acknowledgements, or job status.
 
-## Plugin Shape
+## Quick Install
 
-- `plugins/omnimemory-memory`: memory-slot plugin that registers `memory_search` only.
+Use the installer script:
 
-`memory_get` is not registered because the v2 backend no longer exposes a graph/detail path for it.
+```bash
+node skills/omnimemory-installer/scripts/install_omnimemory.mjs \
+  --mode memory \
+  --openclaw-root /abs/path/to/openclaw \
+  --api-key-env OMNI_MEMORY_API_KEY \
+  --device-no-env OMNI_MEMORY_DEVICE_NO
+```
 
-## Recall Scope
+For local development, provide the plugin checkout:
 
-The default `sessionScope` is `global`, so recall is not limited to the current OpenClaw session. With no `groupId`, retrieval leaves `group_id` empty and lets OmniMemory search the account/device-wide memory space for the configured API key. Configure `groupId` when multiple OpenClaw sessions should share a named bucket. Set `sessionScope: "session"` only when every OpenClaw session must be isolated.
+```bash
+node skills/omnimemory-installer/scripts/install_omnimemory.mjs \
+  --mode memory \
+  --plugin-root /abs/path/to/oc-plugin \
+  --openclaw-root /abs/path/to/openclaw \
+  --api-key-env OMNI_MEMORY_API_KEY \
+  --device-no-env OMNI_MEMORY_DEVICE_NO \
+  --skip-restart
+```
 
-## Launch Safety Defaults
+If you install manually, install the plugin package directory:
 
-- `baseUrl` must use HTTPS by default. Local HTTP is allowed only for `localhost`/`127.0.0.1`/`::1` when `allowInsecureBaseUrl` is explicitly enabled.
-- Logs do not include query text, recalled memory text, or captured turn text unless `debugLogContent` is explicitly enabled.
-- `writeWait` defaults to `false`, so ingest jobs do not block OpenClaw lifecycle hooks by default.
-- The installer grants `hooks.allowConversationAccess=true` because automatic capture reads conversation messages from lifecycle hooks.
+```bash
+openclaw plugins install <plugin-root>/plugins/omnimemory-memory
+```
+
+Then configure `apiKey`, `deviceNo`, `baseUrl`, and point `plugins.slots.memory` to `omnimemory-memory`.
+
+## Runtime Defaults
+
+- `memory_search` is the only registered tool; `memory_get` is intentionally absent.
+- `sessionScope` defaults to `global`, so recall spans OpenClaw sessions for the configured device.
+- Without `groupId`, hybrid retrieval omits `group_id` and searches the memory space for the current API key and device number.
+- `baseUrl` must use HTTPS by default. Local HTTP is allowed only for `localhost`, `127.0.0.1`, or `::1` when `allowInsecureBaseUrl=true`.
+- Logs do not include query text, recalled memory text, or captured turn text unless `debugLogContent=true`.
+- With `writeWait=false`, `agent_end` and `before_compaction` do not wait for ingest jobs. `before_reset` still waits once to flush the final turn before reset.
 
 ## Test
 
@@ -49,17 +79,11 @@ The default `sessionScope` is `global`, so recall is not limited to the current 
 npm test
 ```
 
-`npm test` runs `packages:sync` first, so each installable plugin directory contains its own `runtime/` copy.
+`npm test` runs `packages:sync` first, copying `shared/runtime` into the installable plugin directory at `plugins/omnimemory-memory/runtime`, then runs the Node test suite.
 
-## Docs
+## Documentation
 
-- [Product document](docs/PRODUCT.md)
-- [Testing document](docs/TESTING.md)
-
-## Install In OpenClaw
-
-Install this directory:
-
-```bash
-openclaw plugins install <plugin-root>/plugins/omnimemory-memory
-```
+- [Product and technical notes](docs/PRODUCT.md) | [Chinese](docs/PRODUCT.zh.md)
+- [Testing and acceptance guide](docs/TESTING.md) | [Chinese](docs/TESTING.zh.md)
+- [Plugin package README](plugins/omnimemory-memory/README.md) | [Chinese](plugins/omnimemory-memory/README.zh.md)
+- [Installer skill](skills/omnimemory-installer/SKILL.md) | [Chinese](skills/omnimemory-installer/SKILL.zh.md)

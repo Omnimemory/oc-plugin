@@ -1,4 +1,4 @@
-const DEFAULT_BASE_URL = "https://cvlymnfmxqow.sealoshzh.site/api/v2";
+const DEFAULT_BASE_URL = "https://api.omnimemory.cn/api/v2";
 
 export const COMMON_DEFAULTS = Object.freeze({
   baseUrl: DEFAULT_BASE_URL,
@@ -137,6 +137,13 @@ export function requireApiKey(config) {
     throw new Error("omnimemory apiKey is required");
   }
   return config.apiKey;
+}
+
+export function requireDeviceNo(config) {
+  if (!config.deviceNo) {
+    throw new Error("omnimemory deviceNo is required for hybrid retrieval");
+  }
+  return config.deviceNo;
 }
 
 export function resolveSessionId(config, ctx = {}) {

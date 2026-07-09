@@ -10,7 +10,8 @@ const skillRoot = path.resolve(__dirname, "..");
 
 const DEFAULT_PLUGIN_REPO = "https://github.com/Omnimemory/oc-plugin";
 const DEFAULT_PLUGIN_REPO_DIR = "oc-plugin";
-const DEFAULT_BASE_URL = "https://cvlymnfmxqow.sealoshzh.site/api/v2";
+const DEFAULT_BASE_URL = "https://api.omnimemory.cn/api/v2";
+const DEFAULT_DEVICE_NO_ENV = "OMNI_MEMORY_DEVICE_NO";
 
 const MODES = {
   memory: {
@@ -48,6 +49,7 @@ function parseArgs(argv) {
     apiKeyEnv: "OMNI_MEMORY_API_KEY",
     apiKey: undefined,
     baseUrl: DEFAULT_BASE_URL,
+    deviceNoEnv: DEFAULT_DEVICE_NO_ENV,
     deviceNo: undefined,
     groupId: undefined,
     skipRestart: false,
@@ -81,6 +83,8 @@ function parseArgs(argv) {
       opts.apiKey = takeValue(token);
     } else if (token === "--base-url") {
       opts.baseUrl = String(takeValue(token)).replace(/\/+$/, "");
+    } else if (token === "--device-no-env") {
+      opts.deviceNoEnv = takeValue(token);
     } else if (token === "--device-no") {
       opts.deviceNo = takeValue(token);
     } else if (token === "--group-id") {
@@ -273,31 +277,67 @@ function existingPluginConfig(config, pluginId) {
   return pluginConfig && typeof pluginConfig === "object" && !Array.isArray(pluginConfig) ? pluginConfig : {};
 }
 
+function existingEnabledPluginIds(entries, inactivePluginId) {
+  if (!entries || typeof entries !== "object") {
+    return [];
+  }
+  return Object.entries(entries)
+    .filter(([id, entry]) => id !== inactivePluginId && entry && typeof entry === "object" && entry.enabled !== false)
+    .map(([id]) => id);
+}
+
+function canRecoverCopiedExtensionInstallFailure(installResult, pluginId) {
+  if (installResult.ok) {
+    return false;
+  }
+  const output = installResult.output || "";
+  const copiedExtension = existsSync(path.join(extensionInstallPath(pluginId), "openclaw.plugin.json"));
+  return copiedExtension && /Config validation failed|plugins\.slots\.memory: plugin not found/i.test(output);
+}
+
+function removeUnsupportedEntryHooks(pluginId) {
+  const { target, config } = readConfig();
+  const entry = config?.plugins?.entries?.[pluginId];
+  if (!entry || typeof entry !== "object" || !Object.hasOwn(entry, "hooks")) {
+    return { changed: false, target };
+  }
+  const { hooks: _unsupportedHooks, ...supportedEntry } = entry;
+  const next = {
+    ...config,
+    plugins: {
+      ...config.plugins,
+      entries: {
+        ...config.plugins.entries,
+        [pluginId]: supportedEntry,
+      },
+    },
+  };
+  writeConfig(target, next);
+  return { changed: true, target };
+}
+
 function applyConfig({ modeSpec, opts }) {
   const { target, config } = readConfig();
   const currentPluginConfig = existingPluginConfig(config, modeSpec.pluginId);
   const apiKeyValue = opts.apiKey || currentPluginConfig.apiKey || `\${${opts.apiKeyEnv}}`;
+  const deviceNoValue = opts.deviceNo || currentPluginConfig.deviceNo || `\${${opts.deviceNoEnv}}`;
   const next = config && typeof config === "object" && !Array.isArray(config) ? { ...config } : {};
   next.plugins = next.plugins && typeof next.plugins === "object" ? { ...next.plugins } : {};
   next.plugins.enabled = true;
   next.plugins.entries =
     next.plugins.entries && typeof next.plugins.entries === "object" ? { ...next.plugins.entries } : {};
-  next.plugins.entries[modeSpec.pluginId] = {
-    ...(next.plugins.entries[modeSpec.pluginId] && typeof next.plugins.entries[modeSpec.pluginId] === "object"
+  const currentEntry =
+    next.plugins.entries[modeSpec.pluginId] && typeof next.plugins.entries[modeSpec.pluginId] === "object"
       ? next.plugins.entries[modeSpec.pluginId]
-      : {}),
+      : {};
+  const { hooks: _unsupportedHooks, ...supportedEntry } = currentEntry;
+  next.plugins.entries[modeSpec.pluginId] = {
+    ...supportedEntry,
     enabled: true,
-    hooks: {
-      ...(next.plugins.entries[modeSpec.pluginId]?.hooks &&
-      typeof next.plugins.entries[modeSpec.pluginId].hooks === "object"
-        ? next.plugins.entries[modeSpec.pluginId].hooks
-        : {}),
-      allowConversationAccess: true,
-    },
     config: modeSpec.config({
       apiKeyValue,
       baseUrl: opts.baseUrl || currentPluginConfig.baseUrl || DEFAULT_BASE_URL,
-      deviceNo: opts.deviceNo || currentPluginConfig.deviceNo,
+      deviceNo: deviceNoValue,
       groupId: opts.groupId || currentPluginConfig.groupId,
     }),
   };
@@ -311,7 +351,8 @@ function applyConfig({ modeSpec, opts }) {
     }
   }
   const allow = Array.isArray(next.plugins.allow) ? [...next.plugins.allow] : [];
-  next.plugins.allow = [...new Set([...allow.filter((id) => id !== modeSpec.inactivePluginId), modeSpec.pluginId])];
+  const allowBase = allow.length ? allow : existingEnabledPluginIds(next.plugins.entries, modeSpec.inactivePluginId);
+  next.plugins.allow = [...new Set([...allowBase.filter((id) => id !== modeSpec.inactivePluginId), modeSpec.pluginId])];
   next.plugins.slots =
     next.plugins.slots && typeof next.plugins.slots === "object" ? { ...next.plugins.slots } : {};
   next.plugins.slots.memory = modeSpec.slot;
@@ -329,6 +370,7 @@ function pluginPackageDir(pluginRoot, modeSpec) {
 
 function planReport({ opts, pluginRoot, source, modeSpec, packageDir, configTarget }) {
   const apiKeyValue = opts.apiKey ? "<plaintext qbk key>" : `\${${opts.apiKeyEnv}}`;
+  const deviceNoValue = opts.deviceNo || `\${${opts.deviceNoEnv}}`;
   return {
     ok: true,
     dryRun: true,
@@ -338,18 +380,16 @@ function planReport({ opts, pluginRoot, source, modeSpec, packageDir, configTarg
     source,
     packageDir,
     configTarget,
-    hooks: {
-      allowConversationAccess: true,
-    },
     config: modeSpec.config({
       apiKeyValue,
       baseUrl: opts.baseUrl,
-      deviceNo: opts.deviceNo,
+      deviceNo: deviceNoValue,
       groupId: opts.groupId,
     }),
     steps: [
       "fetch plugin repo if needed",
       "npm run packages:sync",
+      "remove unsupported legacy entry hooks",
       `openclaw plugins install ${packageDir}`,
       `patch ${configTarget}`,
       "openclaw config validate --json",
@@ -371,6 +411,7 @@ async function install(opts) {
   }
 
   const command = resolveOpenClawCommand(opts.openclawRoot);
+  const preInstallConfigRepair = removeUnsupportedEntryHooks(modeSpec.pluginId);
   let installResult = runOpenClaw(
     command,
     ["plugins", "install", ...(opts.link ? ["--link"] : []), packageDir],
@@ -399,7 +440,8 @@ async function install(opts) {
       );
     }
   }
-  const installOk = installResult.ok;
+  const installRecovered = canRecoverCopiedExtensionInstallFailure(installResult, modeSpec.pluginId);
+  const installOk = installResult.ok || installRecovered;
   if (!installOk) {
     throw new Error(installResult.output || "openclaw plugin install failed");
   }
@@ -426,7 +468,8 @@ async function install(opts) {
       : null,
     staleDirRemoval,
     inactiveDirRemoval,
-    install: { ok: installOk, output: installResult.output },
+    install: { ok: installOk, recovered: installRecovered, output: installResult.output },
+    preInstallConfigRepair,
     configPath: writtenConfig,
     validation: parseMaybeJson(validation.output, { raw: validation.output }),
     restart: restart ? { ok: restart.ok, output: restart.output } : null,
@@ -460,8 +503,8 @@ async function uninstall(opts) {
 
 function printUsage() {
   console.error(`Usage:
-  node scripts/install_omnimemory.mjs --mode memory --openclaw-root <path> --api-key-env OMNI_MEMORY_API_KEY
-  node scripts/install_omnimemory.mjs --mode memory --plugin-root <oc-plugin-path> --openclaw-root <path> --api-key qbk_xxx
+  node scripts/install_omnimemory.mjs --mode memory --openclaw-root <path> --api-key-env OMNI_MEMORY_API_KEY --device-no-env OMNI_MEMORY_DEVICE_NO
+  node scripts/install_omnimemory.mjs --mode memory --plugin-root <oc-plugin-path> --openclaw-root <path> --api-key qbk_xxx --device-no <stable-device-no>
 
 Options:
   --mode memory
@@ -471,6 +514,7 @@ Options:
   --api-key-env <ENV_NAME>
   --api-key <qbk_xxx>
   --base-url <url>
+  --device-no-env <ENV_NAME>
   --device-no <device_no>
   --group-id <group_id>
   --skip-restart

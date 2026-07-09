@@ -1,4 +1,4 @@
-import { buildClientMeta, requireApiKey, resolveGroupId, resolveSessionId } from "./config.js";
+import { buildClientMeta, requireApiKey, requireDeviceNo, resolveGroupId, resolveSessionId } from "./config.js";
 import {
   fingerprintMessages,
   isLowValueMemoryText,
@@ -168,6 +168,7 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
   }
   const resolvedGroupId = resolveGroupId(config, { sessionKey, sessionId, groupId });
   const resolvedSessionId = resolveSessionId(config, { sessionKey, sessionId });
+  requireDeviceNo(config);
   const clientMeta = buildClientMeta(config);
   const fetchTopK = clampFetchTopK(topK, config.searchLimit);
   const body = {
@@ -179,7 +180,7 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
   logStatus(
     logger,
     [
-      "recall request -> POST /memory/retrieval",
+      "recall request -> POST /memory/retrieval/hybrid",
       `query_chars=${trimmedQuery.length}`,
       `original_chars=${typeof query === "string" ? query.length : 0}`,
       `requested_top_k=${requestedTopK}`,
@@ -199,7 +200,7 @@ export async function searchMemory({ config, query, sessionKey, sessionId, group
   try {
     const result = await requestJson({
       config,
-      path: "/memory/retrieval",
+      path: "/memory/retrieval/hybrid",
       method: "POST",
       body,
     });

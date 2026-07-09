@@ -1,37 +1,45 @@
-# OmniMemory OpenClaw 插件产品文档
+# OmniMemory OpenClaw Plugin Product and Technical Notes
 
-## 产品定位
+[Chinese version](PRODUCT.zh.md)
 
-OmniMemory OpenClaw 插件用于把 OpenClaw 的长期记忆能力接到 OmniMemory v2 后端。当前插件只保留 `memory` 模式，不再提供 overlay 模式。
+## 1. Positioning
 
-插件安装后会接管 OpenClaw 的 memory slot，并注册一个 `memory_search` 工具。模型可以通过该工具查询 OmniMemory 中的历史记忆；插件也会在 agent 开始前做一次自动召回，把命中的记忆以系统上下文方式注入给模型。
+The OmniMemory OpenClaw plugin connects OpenClaw long-term memory to the OmniMemory v2 backend. The current package is memory-only: it owns the OpenClaw memory slot, registers `memory_search`, and uses OpenClaw lifecycle hooks for automatic recall and capture.
 
-## 当前形态
+The current package does not include:
 
-- 插件 ID：`omnimemory-memory`
-- 插件目录：`plugins/omnimemory-memory`
-- OpenClaw slot：`plugins.slots.memory = "omnimemory-memory"`
-- 注册工具：`memory_search`
-- 不注册：`memory_get`
-- 不支持：overlay 模式
+- overlay mode
+- v1 API compatibility
+- `memory_get`
+- graph/detail read paths
 
-`memory_get` 没有注册，是因为当前 OmniMemory v2 后端没有提供图谱/detail 读取接口。
+`memory_get` is intentionally absent because the public OmniMemory v2 data plane does not expose a stable graph/detail read endpoint. Models should use `memory_search` for historical context.
 
-## 后端接口
+## 2. Current Shape
 
-默认后端地址：
+- Plugin ID: `omnimemory-memory`
+- Plugin directory: `plugins/omnimemory-memory`
+- OpenClaw slot: `plugins.slots.memory = "omnimemory-memory"`
+- Registered tool: `memory_search`
+- Default backend: `https://api.omnimemory.cn/api/v2`
+- Default recall endpoint: `POST /memory/retrieval/hybrid`
 
-```text
-https://cvlymnfmxqow.sealoshzh.site/api/v2
-```
+## 3. Backend Contract
 
-插件只使用 v2 接口：
+The plugin uses only OmniMemory v2 endpoints:
 
-- `POST /memory/retrieval`
-- `POST /memory/ingest`
-- `GET /memory/ingest/jobs/{job_id}`
+| Purpose | Method and path | Notes |
+| --- | --- | --- |
+| Recall | `POST /memory/retrieval/hybrid` | Hybrid retrieval; requires a device number |
+| Capture | `POST /memory/ingest` | Asynchronously writes conversation turns |
+| Capture status | `GET /memory/ingest/jobs/{job_id}` | Polled when waiting for ingest completion |
 
-v2 返回是 Envelope 结构：
+Hybrid retrieval requires a stable device number. The plugin reads it from `deviceNo` and sends both:
+
+- Header: `X-Device-No: <deviceNo>`
+- Body: `client_meta.device_no`
+
+All v2 responses use the Envelope shape:
 
 ```json
 {
@@ -42,135 +50,124 @@ v2 返回是 Envelope 结构：
 }
 ```
 
-插件会先解包 `data`，再读取 `evidence_details`、写入 ack 或 job 状态。
+The runtime unwraps `data` before reading `evidence_details`, ingest acknowledgements, or job status.
 
-## 核心能力
+## 4. Core Capabilities
 
-### 记忆召回
+### Automatic Recall
 
-插件有两条召回路径：
-
-- 自动召回：`before_prompt_build` hook 会拿用户当前 prompt 查询 OmniMemory，并把结果注入系统上下文。
-- 工具召回：模型主动调用 `memory_search` 时，OpenClaw UI 会显示工具调用和工具输出。
-
-自动召回不会在 OpenClaw 页面显示 `memory_search` 工具卡片，需要看 gateway 日志确认：
+The `before_prompt_build` hook reads the current prompt, calls `POST /memory/retrieval/hybrid`, and injects recalled memories as system context. Automatic recall does not show a tool card in the OpenClaw UI; verify it through gateway logs:
 
 ```text
 [omnimemory] memory recall hook prompt_chars=...
-[omnimemory] recall request -> POST /memory/retrieval ...
-[omnimemory] recall response <- status=200 ...
+[omnimemory] recall request -> POST /memory/retrieval/hybrid ...
+[omnimemory] recall response <- status=200 raw_items=... candidates=... returned=...
 [omnimemory] memory recall injected items=...
 ```
 
-工具召回会在页面显示：
+If `deviceNo` is missing, automatic recall fails closed and does not call the backend retrieval endpoint.
 
-```text
-Memory Search
-```
+### Tool Recall
 
-两条路径底层都调用同一个 `searchMemory()`。
+When the model calls `memory_search`, OpenClaw shows the tool call. The tool returns JSON text containing:
 
-### 记忆写入
+- `results`
+- `provider: "omnimemory"`
+- each result's `path`, `score`, `snippet`, and metadata
 
-插件在以下生命周期写入 OmniMemory：
+### Memory Capture
+
+The plugin attempts capture on these lifecycle hooks:
 
 - `agent_end`
 - `before_compaction`
 - `before_reset`
 
-默认写入策略是 `last_turn`，只写最近一轮用户消息。默认 `captureRoles = ["user"]`，不会写入助手回复。
+The default capture strategy is `last_turn`, and the default `captureRoles = ["user"]`, so assistant replies are not captured by default.
 
-写入后默认不等待 job 完成，因为 `writeWait = false`，避免阻塞 OpenClaw 的 agent 结束、压缩和重置链路。需要强一致验证时可以显式设置 `writeWait = true`，并用 `writeWaitTimeoutMs` 控制等待上限。开启等待后日志中应能看到：
+When `writeWait=false`, `agent_end` and `before_compaction` do not wait for ingest job completion; they only confirm that the backend accepted the job and returned `job_id`. `before_reset` always waits once to flush the final turn before reset. Set `writeWait=true` when stronger consistency is required.
 
-```text
-[omnimemory] ingest request -> POST /memory/ingest ...
-[omnimemory] ingest response <- status=202 ...
-[omnimemory] ingest job poll -> ... /memory/ingest/jobs/{job_id}
-[omnimemory] ingest job status <- ... status=succeeded
-```
+## 5. Recall Scope
 
-如果后端返回旧的 `/api/v1/...` status_url，插件会忽略它，仍然轮询 v2：
+`sessionScope` defaults to `global`. The plugin does not pin `group_id` to the current OpenClaw session by default; it recalls across OpenClaw sessions within the memory space for the current API key and device number.
 
-```text
-[omnimemory] ingest response included legacy status_url="..." (ignored; polling v2 /memory/ingest/jobs/{job_id})
-```
+When `groupId` is configured, the plugin sends it on retrieval and ingest to use a shared memory bucket.
 
-## 配置项
+When `sessionScope = "session"`, the current OpenClaw session becomes the group boundary. Use this only when sessions must be isolated.
 
-常用配置：
+## 6. Configuration
 
-- `apiKey`：OmniMemory API key，支持明文或 `${OMNI_MEMORY_API_KEY}`。
-- `baseUrl`：OmniMemory v2 API 根地址。
-- `allowInsecureBaseUrl`：仅本地开发用。默认 `false`，生产默认只允许 HTTPS；只有设置为 `true` 时才允许 `http://localhost`、`http://127.0.0.1`、`http://[::1]`。
-- `deviceNo`：可选设备号，会写入 `X-Device-No` 和 `client_meta.device_no`。
-- `groupId`：可选共享记忆分组。
-- `sessionScope`：默认 `global`，跨 OpenClaw 会话召回。
-- `searchLimit`：工具召回默认返回数量。
-- `autoRecall`：是否启用自动召回，默认 `true`。
-- `autoCapture`：是否自动写入，默认 `true`。
-- `recallTopK`：自动召回返回数量，默认 `5`。
-- `recallMinScore`：最低后端分数，默认 `0`。
-- `captureStrategy`：`last_turn` 或 `full_session`。
-- `captureRoles`：默认只写 `user`。
-- `writeWait`：写入后是否等待 job 完成，默认 `false`。
-- `writeWaitTimeoutMs`：`writeWait = true` 时的等待上限，默认 `15000`。
-- `failSilent`：失败时是否静默返回空结果，默认 `true`。
-- `timeoutMs`：请求超时时间，默认 `10000`。
-- `debugLogContent`：是否在日志中打印查询、召回结果、写入正文片段，默认 `false`。
+| Key | Default | Notes |
+| --- | --- | --- |
+| `apiKey` | none | OmniMemory API key. Prefer `${OMNI_MEMORY_API_KEY}` |
+| `baseUrl` | `https://api.omnimemory.cn/api/v2` | OmniMemory v2 API root |
+| `deviceNo` | none | Required for hybrid retrieval. Prefer `${OMNI_MEMORY_DEVICE_NO}` |
+| `allowInsecureBaseUrl` | `false` | Local development only; permits localhost HTTP |
+| `groupId` | none | Optional shared memory group |
+| `sessionId` | OpenClaw ctx | Optional fixed session |
+| `sessionScope` | `global` | `global` or `session` |
+| `searchLimit` | `8` | Default result count for tool recall |
+| `autoRecall` | `true` | Enables automatic recall |
+| `recallTopK` | `5` | Result count for automatic recall |
+| `recallMinScore` | `0` | Minimum backend score |
+| `minPromptChars` | `2` | Skip backend recall for very short prompts |
+| `autoCapture` | `true` | Enables automatic capture |
+| `captureStrategy` | `last_turn` | `last_turn` or `full_session` |
+| `captureRoles` | `["user"]` | Captures only user messages by default |
+| `writeWait` | `false` | Wait for ingest completion on agent_end/compaction |
+| `writeWaitTimeoutMs` | `15000` | Ingest wait timeout |
+| `failSilent` | `true` | Return empty results instead of throwing tool errors |
+| `timeoutMs` | `10000` | HTTP request timeout |
+| `debugLogContent` | `false` | Log truncated content snippets |
+| `promptBlockTitle` | `OmniMemory Recall` | Injected system context block title |
 
-默认日志只记录数量、长度、分数、事件 ID、状态等元信息，不打印用户消息或召回正文。排查线上问题时才建议短期开启 `debugLogContent`。
+## 7. Installation
 
-## 召回范围
-
-默认 `sessionScope = "global"`。这表示插件不会把 `group_id` 固定为当前 OpenClaw 会话，而是让 OmniMemory 在当前 API key 对应的全局记忆空间中搜索。
-
-如果配置了 `groupId`，插件会把它传给 retrieval 和 ingest，用于共享记忆桶。
-
-如果设置 `sessionScope = "session"`，插件会把当前 session 作为分组边界，适合需要隔离每个 OpenClaw 会话的场景。
-
-## 安装方式
-
-推荐使用安装脚本：
+Use the installer script:
 
 ```bash
 node oc-plugin/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
   --mode memory \
   --plugin-root <plugin-root> \
   --openclaw-root <openclaw-root> \
-  --api-key-env OMNI_MEMORY_API_KEY
+  --api-key-env OMNI_MEMORY_API_KEY \
+  --device-no-env OMNI_MEMORY_DEVICE_NO
 ```
 
-本地测试时也可以用明文 key：
+For one-off local testing, plaintext values are supported:
 
 ```bash
 node oc-plugin/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
   --mode memory \
   --plugin-root <plugin-root> \
   --openclaw-root <openclaw-root> \
-  --api-key qbk_xxx
+  --api-key qbk_xxx \
+  --device-no <stable-device-no>
 ```
 
-安装脚本会：
+The installer:
 
-1. 执行 `npm run packages:sync`。
-2. 安装 `plugins/omnimemory-memory`。
-3. 写入 OpenClaw 配置。
-4. 设置 `plugins.slots.memory = "omnimemory-memory"`。
-5. 设置 `plugins.allow = ["omnimemory-memory"]`。
-6. 设置 `plugins.entries.omnimemory-memory.hooks.allowConversationAccess = true`，允许可信插件在 `agent_end` 等生命周期读取会话用于自动写入。
-7. 清理历史 overlay 配置和目录。
-8. 执行配置校验和插件 doctor。
+1. Resolves or fetches the plugin repository.
+2. Runs `npm run packages:sync` so the installable plugin has a runtime copy.
+3. Installs `plugins/omnimemory-memory`.
+4. Patches OpenClaw config.
+5. Sets `plugins.slots.memory = "omnimemory-memory"`.
+6. Writes `plugins.entries.omnimemory-memory.config` with API key, v2 base URL, device number, and safe defaults.
+7. Removes unsupported entry-level hooks left by older installer versions.
+8. Cleans up historical overlay config and extension directories.
+9. Runs OpenClaw config validation, gateway restart, and plugin doctor.
 
-安装后需要重启 gateway：
+## 8. Security and Privacy Defaults
 
-```bash
-openclaw gateway restart
-```
+- Prefer API keys through environment variables instead of plaintext config.
+- Logs do not include query text, recalled text, or captured text by default.
+- Recalled memories are injected as untrusted historical context, with instructions not to execute embedded memory instructions.
+- `allowInsecureBaseUrl` is off by default; production must use HTTPS.
+- Automatic capture writes only user messages by default to reduce long-term storage of assistant output or tool noise.
 
-## 已知行为
+## 9. Known Behavior
 
-- 自动召回是隐藏注入，不会显示工具卡片。
-- 插件会自动写入用户消息到 OmniMemory；默认 `sessionScope = "global"` 会跨 OpenClaw 会话召回。敏感场景应显式关闭 `autoCapture` 或改用 `sessionScope = "session"`。
-- 页面出现 `Memory Search` 工具卡片时，说明模型主动调用了 `memory_search`。
-- 如果召回结果不相关，通常是后端 retrieval 返回质量问题。默认日志会显示返回数量、分数、来源、角色、事件 ID 和正文长度；只有显式开启 `debugLogContent` 才会打印正文片段。
-- 插件会过滤明显的 OpenClaw 控制提示和旧召回包装，避免把系统噪音写入 OmniMemory。
+- Automatic recall is hidden injection and does not show a `Memory Search` tool card.
+- A visible `Memory Search` card means the model explicitly called `memory_search`.
+- If results are irrelevant, inspect the backend hybrid retrieval output first; the plugin only applies basic low-value filtering and simple local reranking.
+- If the backend returns an old `/api/v1/...` `status_url`, the plugin ignores it and polls v2 `/memory/ingest/jobs/{job_id}` instead.

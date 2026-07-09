@@ -1,53 +1,89 @@
-# OmniMemory OpenClaw 插件测试文档
+# OmniMemory OpenClaw Plugin Testing and Acceptance Guide
 
-## 测试目标
+[Chinese version](TESTING.zh.md)
 
-确认 memory-only 插件在 OpenClaw 中可安装、可召回、可写入、可等待 ingest job 完成，并且不会再加载 overlay 插件。
+## 1. Test Goals
 
-## 测试环境
+Verify that the memory-only plugin can:
 
-测试前准备以下路径或命令：
+- Install into OpenClaw and own the memory slot.
+- Register `memory_search` and omit `memory_get`.
+- Use `POST /memory/retrieval/hybrid` for automatic and tool recall.
+- Send `X-Device-No` and `client_meta.device_no` when `deviceNo` is configured.
+- Fail clearly without calling hybrid retrieval when `deviceNo` is missing.
+- Write memories through `POST /memory/ingest` and poll `GET /memory/ingest/jobs/{job_id}` when waiting.
+- Avoid loading the historical overlay plugin.
 
-- OpenClaw CLI：`openclaw`，或本机 OpenClaw CLI 的完整路径。
-- OpenClaw root：`<openclaw-root>`。
-- OpenClaw 配置：`<openclaw-state-dir>/openclaw.json`。
-- OpenClaw extensions：`<openclaw-state-dir>/extensions`。
-- Dashboard：OpenClaw gateway 输出的本机 dashboard 地址。
-- 插件目录：`<plugin-root>`。
+## 2. Test Environment
 
-## 自动化测试
+Prepare:
 
-在插件目录执行：
+- OpenClaw CLI (`openclaw`) or an OpenClaw root directory.
+- OpenClaw config: `<openclaw-state-dir>/openclaw.json`.
+- OpenClaw extensions: `<openclaw-state-dir>/extensions`.
+- Dashboard URL printed by the OpenClaw gateway.
+- Plugin checkout: `<plugin-root>`.
+- OmniMemory API key, preferably through `OMNI_MEMORY_API_KEY`.
+- OmniMemory device number, preferably through `OMNI_MEMORY_DEVICE_NO`.
+
+## 3. Automated Tests
+
+Run from the plugin repository root:
 
 ```bash
 cd <plugin-root>
-npm.cmd test
+npm test
 ```
 
-预期：
+Expected:
 
 ```text
 synced shared runtime -> plugins/omnimemory-memory/runtime
-# pass 16
+# tests 26
+# pass 26
 # fail 0
 ```
 
-自动化测试覆盖：
+The tests cover:
 
-- memory 插件只注册 `memory_search`。
-- memory 插件会注册自动召回 hook。
-- manifest 使用 v2 baseUrl，且不包含 `memory_get`。
-- v2 Envelope 解包。
-- v2 ErrorEnvelope 抛错。
-- retrieval 只读取 `evidence_details`。
-- group/session/device 参数透传。
-- 控制提示和旧召回包装过滤。
-- ingest 使用 v2 `/memory/ingest`。
-- ingest job 轮询 v2 `/memory/ingest/jobs/{job_id}`。
+- `memory_search` is the only registered tool.
+- Automatic recall uses `before_prompt_build`.
+- The manifest uses the production v2 base URL.
+- `memory_get` is absent.
+- v2 Envelope and ErrorEnvelope handling.
+- Hybrid retrieval path, device metadata, group/session propagation.
+- Missing `deviceNo` does not call backend retrieval.
+- Only `evidence_details` is parsed.
+- OpenClaw control prompt, old recall wrapper, and low-value filtering.
+- Ingest request body, commit idempotency, job polling, and polling backoff.
+- Logs do not leak query text, recalled text, or captured turn text by default.
 
-## 安装验证
+## 4. Installation Validation
 
-安装 memory 插件：
+Start with dry-run:
+
+```bash
+node <plugin-root>/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
+  --mode memory \
+  --plugin-root <plugin-root> \
+  --openclaw-root <openclaw-root> \
+  --api-key-env OMNI_MEMORY_API_KEY \
+  --device-no-env OMNI_MEMORY_DEVICE_NO \
+  --dry-run
+```
+
+After confirming that `config.apiKey` and `config.deviceNo` use environment templates, install:
+
+```bash
+node <plugin-root>/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
+  --mode memory \
+  --plugin-root <plugin-root> \
+  --openclaw-root <openclaw-root> \
+  --api-key-env OMNI_MEMORY_API_KEY \
+  --device-no-env OMNI_MEMORY_DEVICE_NO
+```
+
+For one-off local validation, plaintext values are supported:
 
 ```bash
 node <plugin-root>/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
@@ -55,119 +91,92 @@ node <plugin-root>/skills/omnimemory-installer/scripts/install_omnimemory.mjs \
   --plugin-root <plugin-root> \
   --openclaw-root <openclaw-root> \
   --api-key qbk_xxx \
+  --device-no <stable-device-no> \
   --skip-restart
 ```
 
-重启 gateway：
-
-```bash
-openclaw gateway restart
-```
-
-校验配置：
+Then check:
 
 ```bash
 openclaw config validate --json
-```
-
-预期：
-
-```json
-{"valid":true,"path":"<openclaw-state-dir>/openclaw.json"}
-```
-
-检查插件 doctor：
-
-```bash
 openclaw plugins doctor
-```
-
-不应出现插件 hard error 或 legacy hook warning。当前插件自动召回已迁移到 `before_prompt_build`，所以不应再出现：
-
-```text
-omnimemory-memory still uses legacy before_agent_start
-```
-
-检查 gateway：
-
-```bash
 openclaw gateway health
 ```
 
-预期：
+Expected:
 
-```text
-Gateway Health
-OK
+- Config validation passes.
+- Doctor has no hard error.
+- Doctor no longer reports `legacy before_agent_start`.
+- Gateway health is OK.
+
+## 5. Configuration Acceptance
+
+OpenClaw config should contain:
+
+```json
+{
+  "plugins": {
+    "enabled": true,
+    "allow": ["omnimemory-memory"],
+    "slots": {
+      "memory": "omnimemory-memory"
+    },
+    "entries": {
+      "omnimemory-memory": {
+        "enabled": true,
+        "config": {
+          "apiKey": "${OMNI_MEMORY_API_KEY}",
+          "baseUrl": "https://api.omnimemory.cn/api/v2",
+          "deviceNo": "${OMNI_MEMORY_DEVICE_NO}",
+          "sessionScope": "global",
+          "autoRecall": true,
+          "autoCapture": true,
+          "writeWait": false
+        }
+      }
+    }
+  }
+}
 ```
 
-## 配置验证
+These should be absent:
 
-查看关键配置：
+- `plugins.entries.omnimemory-overlay`
+- `omnimemory-overlay` in `plugins.allow`
+- `plugins.slots.memory = "memory-core"`, unless you intentionally disable OmniMemory
+- `omnimemory-overlay` in the extensions directory
+- `plugins.entries.omnimemory-memory.hooks`
 
-```powershell
-Select-String -Path <openclaw-state-dir>\openclaw.json -Pattern '"memory"|omnimemory-memory|omnimemory-overlay|"allow"|baseUrl|writeWait|autoCapture'
-```
+## 6. Log Acceptance
 
-预期运行态：
+Watch gateway logs for `[omnimemory]`.
 
-```text
-"memory": "omnimemory-memory"
-"allow": [
-  "omnimemory-memory"
-]
-"baseUrl": "https://cvlymnfmxqow.sealoshzh.site/api/v2"
-"autoCapture": true
-"writeWait": true
-```
-
-不应存在运行态 overlay：
-
-- `plugins.entries.omnimemory-overlay` 不应存在。
-- `plugins.allow` 不应包含 `omnimemory-overlay`。
-- `plugins.slots.memory` 不应是 `memory-core`。
-
-检查 extensions 目录：
-
-```powershell
-Get-ChildItem -Force <openclaw-state-dir>\extensions
-```
-
-预期只看到：
-
-```text
-omnimemory-memory
-```
-
-## 日志观察
-
-启动或查看 gateway 日志后，关注 `[omnimemory]` 前缀。
-
-自动召回成功日志：
+Successful automatic recall:
 
 ```text
 [omnimemory] memory recall hook prompt_chars=...
-[omnimemory] recall request -> POST /memory/retrieval query="..." original="..."
+[omnimemory] recall request -> POST /memory/retrieval/hybrid query_chars=...
 [omnimemory] recall response <- status=200 raw_items=... candidates=... returned=...
-[omnimemory] recall item #1 score=... rel=... source=... role=... text="..."
+[omnimemory] recall item #1 score=... rel=... source=... role=... chars=...
 [omnimemory] memory recall injected items=... block_chars=...
 ```
 
-工具召回成功日志：
+Successful tool recall:
 
 ```text
-[omnimemory] recall request -> POST /memory/retrieval ...
+[omnimemory] recall request -> POST /memory/retrieval/hybrid ...
 [omnimemory] recall response <- status=200 ...
 ```
 
-同时 OpenClaw UI 会显示：
+OpenClaw UI should show:
 
 ```text
 Memory Search
 Tool output memory_search
 ```
 
-写入成功日志：
+Successful capture:
 
 ```text
 [omnimemory] capture hook normalized=... selected=... strategy=last_turn
@@ -175,172 +184,127 @@ Tool output memory_search
 [omnimemory] ingest payload turns=... roles=user commit=...
 [omnimemory] ingest request -> POST /memory/ingest ...
 [omnimemory] ingest response <- status=202 accepted=true job_id=...
-[omnimemory] ingest job poll -> job_id=... path=/memory/ingest/jobs/...
-[omnimemory] ingest job status <- job_id=... status=succeeded
 ```
 
-如果看到下面日志，属于正常兼容处理：
+When `writeWait=true` or `before_reset` runs, expect:
+
+```text
+[omnimemory] ingest job poll -> job_id=... path=/memory/ingest/jobs/...
+[omnimemory] ingest job status <- job_id=... status=completed
+```
+
+If the backend returns an old `status_url`, this is expected compatibility behavior:
 
 ```text
 [omnimemory] ingest response included legacy status_url="..." (ignored; polling v2 /memory/ingest/jobs/{job_id})
 ```
 
-这表示后端响应里带了旧 v1 status_url，但插件没有使用它。
+## 7. Manual Test Cases
 
-## 手工测试用例
+### Case 1: Automatic Recall
 
-### 用例 1：确认自动召回
-
-步骤：
-
-1. 打开 OpenClaw gateway 输出的 dashboard 地址。
-2. 新建或继续一个会话。
-3. 输入一个之前已经写入过的事实问题，例如：
+1. Open the OpenClaw dashboard.
+2. Confirm the plugin is enabled and `OMNI_MEMORY_API_KEY` / `OMNI_MEMORY_DEVICE_NO` are set.
+3. Ask about a fact that already exists in OmniMemory:
 
 ```text
-我有几个打火机
+Do you remember what my water bottle looks like?
 ```
 
-预期：
+Expected:
 
-- 页面不一定出现 `Memory Search` 工具卡片。
-- 终端出现 `memory recall injected items=...`。
-- 如果召回命中，回答能包含历史事实。
+- The UI may not show a `Memory Search` card.
+- Gateway logs show a hybrid recall request.
+- If the backend returns a hit, the answer can reference the recalled fact.
 
-判断标准：
+### Case 2: Tool Recall
+
+Ask:
 
 ```text
-recall response <- status=200
-memory recall injected items=1
+Use memory_search to find what I said about my water bottle.
 ```
 
-或 items 大于 1。
+Expected:
 
-### 用例 2：确认工具召回
+- The UI shows `Memory Search`.
+- Tool output includes `provider: "omnimemory"`.
+- Logs show `POST /memory/retrieval/hybrid`.
 
-步骤：
+### Case 3: Capture and Cross-Session Recall
 
-1. 在 OpenClaw 页面明确要求：
+1. Enter a new fact:
 
 ```text
-调用 memory_search 查一下我有什么关于打火机的记忆
+My water bottle is transparent and has a blue lid.
 ```
 
-预期：
-
-- 页面显示 `Memory Search`。
-- Tool output 中包含 `provider: "omnimemory"`。
-- 日志出现 retrieval 请求。
-
-### 用例 3：确认写入和跨会话召回
-
-步骤：
-
-1. 输入一条新事实：
+2. Wait for the answer to finish.
+3. Confirm ingest returned `accepted=true` and `job_id`.
+4. If `writeWait` is off, wait for the backend async job to finish.
+5. Start a new session or reset.
+6. Ask:
 
 ```text
-我的水杯是透明的
+What does my water bottle look like?
 ```
 
-2. 等待回答结束。
-3. 查看日志，确认 ingest job `succeeded`。
-4. 开新会话或 reset。
-5. 输入：
+Expected:
 
-```text
-我的水杯是什么样的
-```
+- Logs show a hybrid recall request.
+- The returned result or answer includes "transparent" and "blue lid".
 
-预期：
+### Case 4: Confirm the Answer Is Not From Local Memory Files
 
-- 终端出现 recall 请求。
-- 返回结果中包含“透明”。
-- 页面回答中能说出水杯是透明的。
+1. Clear or ignore local OpenClaw `memory/*.md`.
+2. Ask about a fact that only exists in OmniMemory.
+3. Inspect `recall item` in gateway logs.
 
-### 用例 4：确认 OpenClaw 本地记忆不是唯一来源
+Only a matching `recall item` counts as an OmniMemory recall hit.
 
-步骤：
+### Case 5: Missing Device Number
 
-1. 清理或忽略 OpenClaw 本地 `memory/*.md`。
-2. 提问一个已写入 OmniMemory 的事实。
-3. 看日志里的 `recall item`。
+1. Temporarily remove `deviceNo` or leave `${OMNI_MEMORY_DEVICE_NO}` empty.
+2. Trigger automatic recall or `memory_search`.
 
-预期：
+Expected:
 
-- 如果日志中 `recall item` 包含该事实，则回答可判定来自 OmniMemory。
-- 如果页面回答引用了 `memory/2026-xx-xx.md`，但日志没有命中对应事实，则不是 OmniMemory 召回成功。
+- Logs include `deviceNo is required for hybrid retrieval`.
+- No `POST /memory/retrieval/hybrid` request is sent.
+- Restoring the device number restores recall.
 
-### 用例 5：确认 overlay 不再运行
+## 8. FAQ
 
-步骤：
+### No Memory Search card appeared. Did recall run?
 
-1. 查看 extensions 目录。
-2. 查看 OpenClaw 配置。
-3. 运行插件 doctor。
+Not necessarily a failure. Automatic recall is hidden injection and does not show a tool card. Check gateway logs for `memory recall injected`.
 
-预期：
+### The page answered with historical info, but there is no recall item. Is that an OmniMemory hit?
 
-- extensions 目录没有 `omnimemory-overlay`。
-- `plugins.allow` 没有 `omnimemory-overlay`。
-- 日志里没有 `overlay recall`。
+No. The answer may come from current context, local memory files, or residual model context. OmniMemory hits require `recall item #...` in the logs.
 
-## 常见问题判断
+### What if recall results are irrelevant?
 
-### 页面没有 Memory Search，是不是没召回？
+Inspect `raw_items`, `candidates`, `returned`, and each `recall item`. The plugin applies basic filtering and simple reranking, but quality mostly depends on backend hybrid retrieval.
 
-不一定。自动召回是隐藏注入，不显示工具卡片。以终端日志为准：
+### Why do logs still mention v1?
 
-```text
-memory recall injected items=...
-```
+The plugin sends only v2 requests. v1 can appear only in a legacy `status_url` returned by the backend; the plugin ignores it and polls the v2 job endpoint.
 
-### 页面回答了历史信息，但日志没有 recall item，算不算 OmniMemory 命中？
+### Doctor still reports legacy before_agent_start. What should I do?
 
-不算。可能是 OpenClaw 当前上下文、本地 memory 文件或模型上下文残留。判断 OmniMemory 命中要看日志里的：
+The OpenClaw runtime is still loading an old plugin. Re-run the installer, make sure only `omnimemory-memory` remains in extensions, and restart the gateway.
 
-```text
-recall item #...
-```
+## 9. Regression Checklist
 
-### recall 返回了不相关内容怎么办？
-
-先看日志字段：
-
-```text
-source=...
-role=...
-text="..."
-```
-
-如果 `text` 与 query 无关，说明后端 retrieval 返回质量不稳定。插件当前会做基础低价值过滤和简单相关性重排，但不会完全替代后端检索质量。
-
-### 为什么还有 v1 字样？
-
-插件请求只走 v2。日志里的 v1 只可能来自后端返回的 `status_url` 字段：
-
-```text
-backend_status_url_ignored=/api/v1/...
-```
-
-插件会忽略它，并轮询：
-
-```text
-/memory/ingest/jobs/{job_id}
-```
-
-### 为什么 doctor 不应再提示 legacy before_agent_start？
-
-插件自动召回已迁移到 `before_prompt_build`。如果 doctor 仍提示 `legacy before_agent_start`，说明安装目录里仍是旧版本插件，需要重新执行安装脚本并重启 gateway。
-
-## 回归检查清单
-
-- `npm.cmd test` 通过。
-- `packages:sync` 只同步 `omnimemory-memory/runtime`。
-- OpenClaw config valid。
-- `plugins.slots.memory = omnimemory-memory`。
-- `plugins.allow = ["omnimemory-memory"]`。
-- extensions 目录没有 overlay。
-- 自动召回日志出现 `memory recall injected`。
-- 工具召回能显示 `Memory Search`。
-- ingest 使用 `/memory/ingest`。
-- job poll 使用 `/memory/ingest/jobs/{job_id}`。
+- `npm test` passes.
+- `packages:sync` only syncs `omnimemory-memory/runtime`.
+- OpenClaw config validation passes.
+- `plugins.slots.memory = "omnimemory-memory"`.
+- `plugins.allow` includes `omnimemory-memory`.
+- `omnimemory-overlay` is absent from entries, allow list, and extensions.
+- Config contains `apiKey` and `deviceNo`.
+- Automatic recall logs `POST /memory/retrieval/hybrid`.
+- Tool recall shows `Memory Search`.
+- Capture uses `POST /memory/ingest`.
+- Waiting for capture polls `GET /memory/ingest/jobs/{job_id}`.

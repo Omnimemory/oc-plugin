@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import memoryPlugin from "../plugins/omnimemory-memory/index.js";
 
@@ -69,6 +72,7 @@ test("memory plugin auto recalls before prompt build", async () => {
   const api = createMockApi({
     apiKey: "qbk_test",
     baseUrl: "https://example.test/api/v2",
+    deviceNo: "device-7",
   });
   let captured;
   globalThis.fetch = async (url, options) => {
@@ -94,7 +98,7 @@ test("memory plugin auto recalls before prompt build", async () => {
     { prompt: "我今天起床和下班时间" },
     { sessionKey: "agent:main:test", sessionId: "sid" },
   );
-  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval");
+  assert.equal(captured.url, "https://example.test/api/v2/memory/retrieval/hybrid");
   assert.equal(captured.body.query, "今天起床和下班时间");
   assert.match(result.prependSystemContext, /OmniMemory is active/);
   assert.match(result.prependSystemContext, /08:00/);
@@ -104,7 +108,7 @@ test("memory plugin auto recalls before prompt build", async () => {
 
 test("manifests use v2 base URL and do not mention memory_get", async () => {
   const memory = JSON.parse(await readFile(new URL("../plugins/omnimemory-memory/openclaw.plugin.json", import.meta.url), "utf8"));
-  assert.equal(memory.uiHints.baseUrl.placeholder, "https://cvlymnfmxqow.sealoshzh.site/api/v2");
+  assert.equal(memory.uiHints.baseUrl.placeholder, "https://api.omnimemory.cn/api/v2");
   assert.deepEqual(memory.contracts.tools, ["memory_search"]);
   assert.equal(JSON.stringify(memory).includes("memory_get"), false);
 });
@@ -140,7 +144,7 @@ test("manifest schema declares every runtime-supported launch config", async () 
   assert.equal(memory.configSchema.additionalProperties, false);
 });
 
-test("installer dry-run config grants conversation access and safe defaults", () => {
+test("installer dry-run config avoids unsupported entry hooks and uses safe defaults", () => {
   const script = new URL("../skills/omnimemory-installer/scripts/install_omnimemory.mjs", import.meta.url);
   const pluginRoot = new URL("..", import.meta.url);
   const result = spawnSync(
@@ -165,10 +169,231 @@ test("installer dry-run config grants conversation access and safe defaults", ()
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const report = JSON.parse(result.stdout);
-  assert.deepEqual(report.hooks, { allowConversationAccess: true });
+  assert.equal(Object.hasOwn(report, "hooks"), false);
   assert.equal(report.config.apiKey, "${OMNI_MEMORY_API_KEY}");
+  assert.equal(report.config.deviceNo, "${OMNI_MEMORY_DEVICE_NO}");
   assert.equal(report.config.autoRecall, true);
   assert.equal(report.config.autoCapture, true);
   assert.equal(report.config.writeWait, false);
   assert.equal(report.config.debugLogContent, false);
+});
+
+test("installer preserves existing plugin entries when allow list starts empty", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "omni-openclaw-install-"));
+  try {
+    const script = new URL("../skills/omnimemory-installer/scripts/install_omnimemory.mjs", import.meta.url);
+    const pluginRoot = new URL("..", import.meta.url);
+    const configPath = path.join(tempDir, "openclaw.json");
+    const openclawRoot = path.join(tempDir, "openclaw");
+    const distDir = path.join(openclawRoot, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          plugins: {
+            allow: [],
+            entries: {
+              whatsapp: { enabled: true },
+              feishu: { enabled: true },
+              "omnimemory-memory": {
+                enabled: false,
+                hooks: { allowConversationAccess: true },
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(path.join(openclawRoot, "package.json"), "{}\n");
+    writeFileSync(
+      path.join(distDir, "index.js"),
+      [
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'config' && args[1] === 'validate') console.log(JSON.stringify({ valid: true }));",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        script.pathname,
+        "--mode",
+        "memory",
+        "--plugin-root",
+        pluginRoot.pathname,
+        "--openclaw-root",
+        openclawRoot,
+        "--api-key-env",
+        "OMNI_MEMORY_API_KEY",
+        "--device-no-env",
+        "OMNI_MEMORY_DEVICE_NO",
+        "--skip-restart",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_STATE_DIR: tempDir,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(config.plugins.allow.sort(), ["feishu", "omnimemory-memory", "whatsapp"]);
+    assert.equal(Object.hasOwn(config.plugins.entries["omnimemory-memory"], "hooks"), false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("installer clears unsupported hooks before invoking OpenClaw install", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "omni-openclaw-install-"));
+  try {
+    const script = new URL("../skills/omnimemory-installer/scripts/install_omnimemory.mjs", import.meta.url);
+    const pluginRoot = new URL("..", import.meta.url);
+    const configPath = path.join(tempDir, "openclaw.json");
+    const openclawRoot = path.join(tempDir, "openclaw");
+    const distDir = path.join(openclawRoot, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          plugins: {
+            allow: ["omnimemory-memory"],
+            entries: {
+              "omnimemory-memory": {
+                enabled: true,
+                hooks: { allowConversationAccess: true },
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(path.join(openclawRoot, "package.json"), "{}\n");
+    writeFileSync(
+      path.join(distDir, "index.js"),
+      [
+        "const fs = require('node:fs');",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'plugins' && args[1] === 'install') {",
+        "  const cfg = JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'));",
+        "  if (cfg.plugins.entries['omnimemory-memory'].hooks) {",
+        "    console.error('Config invalid: plugins.entries.omnimemory-memory.hooks: Unrecognized key');",
+        "    process.exit(1);",
+        "  }",
+        "}",
+        "if (args[0] === 'config' && args[1] === 'validate') console.log(JSON.stringify({ valid: true }));",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        script.pathname,
+        "--mode",
+        "memory",
+        "--plugin-root",
+        pluginRoot.pathname,
+        "--openclaw-root",
+        openclawRoot,
+        "--api-key-env",
+        "OMNI_MEMORY_API_KEY",
+        "--device-no-env",
+        "OMNI_MEMORY_DEVICE_NO",
+        "--skip-restart",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_STATE_DIR: tempDir,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(Object.hasOwn(config.plugins.entries["omnimemory-memory"], "hooks"), false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("installer continues when OpenClaw copied plugin before slot validation failure", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "omni-openclaw-install-"));
+  try {
+    const script = new URL("../skills/omnimemory-installer/scripts/install_omnimemory.mjs", import.meta.url);
+    const pluginRoot = new URL("..", import.meta.url);
+    const configPath = path.join(tempDir, "openclaw.json");
+    const openclawRoot = path.join(tempDir, "openclaw");
+    const distDir = path.join(openclawRoot, "dist");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ plugins: { allow: [], entries: {} } }, null, 2));
+    writeFileSync(path.join(openclawRoot, "package.json"), "{}\n");
+    writeFileSync(
+      path.join(distDir, "index.js"),
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'plugins' && args[1] === 'install') {",
+        "  const installDir = path.join(process.env.OPENCLAW_STATE_DIR, 'extensions', 'omnimemory-memory');",
+        "  fs.mkdirSync(installDir, { recursive: true });",
+        "  fs.writeFileSync(path.join(installDir, 'openclaw.plugin.json'), '{}\\n');",
+        "  console.error('Config validation failed: plugins.slots.memory: plugin not found: omnimemory-memory');",
+        "  process.exit(1);",
+        "}",
+        "if (args[0] === 'config' && args[1] === 'validate') console.log(JSON.stringify({ valid: true }));",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        script.pathname,
+        "--mode",
+        "memory",
+        "--plugin-root",
+        pluginRoot.pathname,
+        "--openclaw-root",
+        openclawRoot,
+        "--api-key-env",
+        "OMNI_MEMORY_API_KEY",
+        "--device-no-env",
+        "OMNI_MEMORY_DEVICE_NO",
+        "--skip-restart",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_STATE_DIR: tempDir,
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(config.plugins.slots.memory, "omnimemory-memory");
+    assert.equal(config.plugins.entries["omnimemory-memory"].enabled, true);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
